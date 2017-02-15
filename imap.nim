@@ -15,11 +15,20 @@ type
     exists*: int
     recent*: int
 
-  Imap* = ref object
-    sock: AsyncSocket
+  ImapClientBase*[SocketType] = ref object
+    sock: SocketType
     nextTag: int16
 
-proc newImap*(sslContext = defaultSslContext): Imap =
+  ImapClient* = ImapClientBase[Socket]
+  AsyncImapClient* = ImapClientBase[AsyncSocket]
+
+proc newImap*(sslContext = defaultSslContext): ImapClient =
+  ## Create a new Imap instance
+  new result
+  result.sock = newSocket()
+  sslContext.wrapSocket(result.sock)
+
+proc newAsyncImap*(sslContext = defaultSslContext): AsyncImapClient =
   ## Create a new Imap instance
   new result
   result.sock = newAsyncSocket()
@@ -28,17 +37,24 @@ proc newImap*(sslContext = defaultSslContext): Imap =
 type
   ReplyError* = object of IOError
 
-proc quitExcpt(imap: Imap, msg: string): Future[void] =
-  var retFuture = newFuture[void]()
+proc quitExcpt(imap: ImapClient, msg: string) =
   when Debugging:
     echo "C: QUIT"
-  var sendFut = imap.sock.send("QUIT")
+  imap.sock.send("QUIT")
+  raise newException(ReplyError, msg)
+
+proc quitExcpt(imap: AsyncImapClient, msg: string): Future[void] =
+  when Debugging:
+    echo "C: QUIT"
+  var
+    retFuture = newFuture[void]()
+    sendFut = imap.sock.send("QUIT")
   sendFut.callback =
     proc () =
       raise newException(ReplyError, msg)
   return retFuture
 
-proc checkOk(imap: Imap, tag = "*") {.async.} =
+proc checkOk(imap: ImapClient | AsyncImapClient, tag = "*") {.multisync.} =
   var line = await imap.sock.recvLine()
   when Debugging:
     echo "S: ",line
@@ -55,7 +71,7 @@ proc checkOk(imap: Imap, tag = "*") {.async.} =
 
   await quitExcpt(imap, "Expected OK, got: " & line & " - " & $elems)
 
-proc sendLine(imap: Imap, line: string): Future[string] {.async.} =
+proc sendLine(imap: ImapClient | AsyncImapClient, line: string): Future[string] {.multisync.} =
   let
     tag = toHex(imap.nextTag, 4)
   inc imap.nextTag
@@ -64,11 +80,11 @@ proc sendLine(imap: Imap, line: string): Future[string] {.async.} =
   await imap.sock.send(tag&" "&line&CRLF)
   result = tag
 
-proc dispatchLine(imap: Imap, line: string) {.async.} =
+proc dispatchLine(imap: ImapClient | AsyncImapClient, line: string) {.multisync.} =
   when Debugging:
     echo "S: ", line
 
-proc sendCmd(imap: Imap, cmd: string, args = "") {.async.} =
+proc sendCmd(imap: ImapClient | AsyncImapClient, cmd: string, args = "") {.multisync.} =
   let
     tag = await imap.sendLine(cmd& " "& args)
     completion = tag&" OK"
@@ -83,8 +99,8 @@ proc sendCmd(imap: Imap, cmd: string, args = "") {.async.} =
     else:
       await imap.dispatchLine(line)
 
-proc sendCmd(imap: Imap, cmd, args: string,
-             op: proc(line: string): bool) {.async.} =
+proc sendCmd(imap: ImapClient | AsyncImapClient, cmd, args: string,
+             op: proc(line: string): bool) {.multisync.} =
   let
     tag = await imap.sendLine(cmd& " "& args)
     completion = tag&" OK"
@@ -100,21 +116,26 @@ proc sendCmd(imap: Imap, cmd, args: string,
       if not op(line):
         await imap.dispatchLine(line)
 
-proc connect*(imap: Imap, address: string, port: Port) {.async} =
+proc connect*(imap: ImapClient, address: string, port: Port) =
+  ## Establish a connection to an IMAP server
+  imap.sock.connect(address, port)
+  imap.checkOk()
+
+proc connect*(imap: AsyncImapClient, address: string, port: Port) {.async} =
   ## Establish a connection to an IMAP server
   await imap.sock.connect(address, port)
   await imap.checkOk()
 
-proc authenticate*(imap: Imap, user, pass: string) {.async.} =
+proc authenticate*(imap: ImapClient | AsyncImapClient, user, pass: string) {.multisync.} =
   ## Authenticate to an IMAP server
   await imap.sendCmd("LOGIN", user&" "&pass)
 
-proc close*(imap: Imap) {.async.} =
+proc close*(imap: ImapClient | AsyncImapClient) {.multisync.} =
   ## Disconnects from the SMTP server and closes the socket.
   await imap.sendCmd("LOGOUT")
   imap.sock.close()
 
-proc noop*(imap: Imap) {.async.} =
+proc noop*(imap: ImapClient | AsyncImapClient) {.multisync.} =
   ## The NOOP command always succeeds.  It does nothing.
   ##
   ## Since any command can return a status update as untagged data, the
@@ -123,15 +144,15 @@ proc noop*(imap: Imap) {.async.} =
   ## preferred method to do this). The NOOP command can also be used
   ## to reset any inactivity autologout timer on the server.
 
-  result = imap.sendCmd("NOOP")
+  await imap.sendCmd("NOOP")
 
-proc create*(imap: Imap, name: string) {.async.} =
-  result = imap.sendCmd("CREATE "& name)
+proc create*(imap: ImapClient | AsyncImapClient, name: string) {.multisync.} =
+  await imap.sendCmd("CREATE "& name)
 
-proc store*(imap: Imap, uid: int, flags: string) {.async.} =
-  result = imap.sendCmd("STORE "& $uid& " "& flags)
+proc store*(imap: ImapClient | AsyncImapClient, uid: int, flags: string) {.multisync.} =
+  await imap.sendCmd("STORE "& $uid& " "& flags)
 
-proc examine*(imap: Imap, name: string): Future[Status] {.async.} =
+proc examine*(imap: ImapClient | AsyncImapClient, name: string): Future[Status] {.multisync.} =
   ## The EXAMINE command is identical to SELECT and returns the same
   ## output; however, the selected mailbox is identified as read-only.
   var
@@ -148,7 +169,7 @@ proc examine*(imap: Imap, name: string): Future[Status] {.async.} =
 
   await imap.sendCmd("EXAMINE", name, op)
 
-proc select*(imap: Imap, name: string): Future[Status] {.async.} =
+proc select*(imap: ImapClient | AsyncImapClient, name: string): Future[Status] {.multisync.} =
   ## The SELECT command selects a mailbox so that messages in the
   ## mailbox can be accessed.
   var
@@ -166,7 +187,7 @@ proc select*(imap: Imap, name: string): Future[Status] {.async.} =
 
   await imap.sendCmd("SELECT", name, op)
 
-proc fetch*(imap: Imap, uid: int, items: string): Future[string] {.async.} =
+proc fetch*(imap: ImapClient | AsyncImapClient, uid: int, items: string): Future[string] {.multisync.} =
   ## The FETCH command retrieves data associated with a message in the
   ## mailbox.
   var
@@ -189,7 +210,8 @@ proc fetch*(imap: Imap, uid: int, items: string): Future[string] {.async.} =
 
   await imap.sendCmd("FETCH", $uid& " "& items, op)
 
-proc append*(imap: Imap, mailbox, flags, msg: string) {.async.} =
+proc append*(imap: ImapClient | AsyncImapClient,
+             mailbox, flags, msg: string) {.multisync.} =
   ## Append a new message to the end of the specified destination mailbox.
   let
     tag = await imap.sendLine("APPEND " & mailbox & " ("&flags&") {"& $msg.len& "}")
@@ -207,7 +229,7 @@ proc append*(imap: Imap, mailbox, flags, msg: string) {.async.} =
       await imap.checkOk(tag)
       return
 
-proc search*(imap: Imap, spec: string): Future[seq[int]] {.async.} =
+proc search*(imap: ImapClient | AsyncImapClient, spec: string): Future[seq[int]] {.multisync.} =
   ## The SEARCH command searches the mailbox for messages that match
   ## the given searching criteria.
   result = newSeq[int]()
