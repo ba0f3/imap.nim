@@ -7,7 +7,7 @@ when defined(ssl):
 
 const
   CRLF* = "\c\L"
-  Debugging = false
+  Debugging = not defined(release)
 
 type
   Status* = object
@@ -195,20 +195,22 @@ proc fetch*(imap: ImapClient | AsyncImapClient, uid: int, items: string): Future
     id: int
     section: string
   let
-    data = addr result
-    op = proc (line: string): bool =
-      if len > 0 and len > data[].len:
-        data[].add(line)
-        data[].add(CRLF)
-        result = true
-      if len == data[].len and line == ")":
-        result = true
-      elif scanf(line, "* $i FETCH ($+ {$i}", id, section, len):
-         if id == uid:
-           data[] = newStringOfCap(len)
-           result = true
-
-  await imap.sendCmd("FETCH", $uid& " "& items, op)
+    tag = await imap.sendLine("FETCH $# $#" % [$uid, items])
+    completion = tag&" OK"
+    no = tag&" NO"
+  while true:
+    let
+      line = await imap.sock.recvLine()
+    when Debugging:
+      echo "S: ", line
+    if line.startsWith(completion) or line.startsWith(no):
+      break
+    else:
+      if scanf(line, "* $i FETCH ($+ {$i}", id, section, len):
+        if id == uid:
+          result = await imap.sock.recv(len)
+      else:
+        await imap.dispatchLine(line)
 
 proc append*(imap: ImapClient | AsyncImapClient,
              mailbox, flags, msg: string) {.multisync.} =
