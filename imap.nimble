@@ -1,11 +1,11 @@
 # Package
 
-version       = "0.2.0"
+version       = "0.2.1"
 author        = "Emery Hemingway"
 description   = "IMAP client library"
-license       = "GPL2"
+license       = "GPLv3"
+srcDir        = "src"
 
 # Dependencies
 
-requires "nim >= 0.15.0"
-
+requires "nim >= 0.18.0"
