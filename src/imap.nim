@@ -110,12 +110,16 @@ proc sendCmd(imap: ImapClient, cmd: string, args = "") {.async.} =
   let
     completion = tag & " OK"
     no = tag & " NO"
+    bad = tag & " BAD"
   while true:
     let line = await imap.sock.recvLine()
     when Debugging:
       echo "S: ", line
     if line.startsWith(completion) or line.startsWith(no):
       break
+    if line.startsWith(bad):
+      imap.sock.close()
+      raise newException(IOError, line)
     else:
       await imap.dispatchLine(line)
 
@@ -125,12 +129,17 @@ proc sendCmd(imap: ImapClient; cmd, args: string, op: LineCallback) {.async.} =
   let
     completion = tag & " OK"
     no = tag & " NO"
+    bad = tag & " BAD"
   while true:
     let line = await imap.sock.recvLine()
     when Debugging:
       echo "S: ", line
+    echo "line: ", line
     if line.startsWith(completion) or line.startsWith(no):
       break
+    if line.startsWith(bad):
+      imap.sock.close()
+      raise newException(IOError, line)
     else:
       if not op(line):
         await imap.dispatchLine(line)
@@ -297,6 +306,9 @@ proc process*(imap: ImapClient): Future[void] {.async.} =
         let cb = imap.tagCallbacks.getOrDefault(tag)
         if not cb.isNil and cb(line):
           imap.tagCallbacks.del(tag)
+        else:
+          if line.startsWith(fmt"{tag} BAD"):
+            raise newException(IOError, line)
 
 proc idle*(imap: ImapClient): Future[void] {.async.} =
   var stat = Status(exists: -1, recent: -1)
