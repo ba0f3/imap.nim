@@ -1,4 +1,4 @@
-import net, strutils, asyncnet, asyncFutures, asyncdispatch, strscans, tables, deques, parseutils
+import net, strutils, asyncnet, asyncFutures, asyncdispatch, strscans, tables, deques, parseutils, strformat
 
 export Port
 
@@ -67,8 +67,7 @@ proc checkOk(imap: ImapClient, tag = "*") {.async.} =
   var line = await imap.sock.recvLine()
   when Debugging:
     echo "S: ",line
-  let
-    elems = line.split(' ', 2)
+  let elems = line.split(' ', 2)
   if elems.len == 3 and elems[0] == tag:
     case elems[1]:
       of "OK":
@@ -77,11 +76,10 @@ proc checkOk(imap: ImapClient, tag = "*") {.async.} =
         quitExcpt(imap, elems[2])
       else:
         discard
-  quitExcpt(imap, "Expected OK, got: " & line & " - " & $elems)
+  quitExcpt(imap, fmt"Expected OK, got: {line} - {$elems}")
 
 proc assertOk(imap: ImapClient; line: string; tag = "*") =
-  let
-    elems = line.split(' ', 2)
+  let elems = line.split(' ', 2)
   if elems.len == 3:
     case elems[1]:
       of "OK":
@@ -90,7 +88,7 @@ proc assertOk(imap: ImapClient; line: string; tag = "*") =
         quitExcpt(imap, elems[2])
       else:
         discard
-  quitExcpt(imap, "Expected OK, got: " & line & " - " & $elems)
+  quitExcpt(imap, fmt"Expected OK, got: {line} - {$elems}")
 
 proc sendLine(imap: ImapClient; line: string): Future[void] =
   when Debugging:
@@ -100,22 +98,20 @@ proc sendLine(imap: ImapClient; line: string): Future[void] =
 proc sendTag(imap: ImapClient; cb: LineCallback; cmd: string): Future[void] =
   let tag = imap.nextTag
   imap.tagCallbacks[tag] = cb
-  imap.sendLine(tag & " " & cmd)
+  imap.sendLine(fmt"{tag} {cmd}")
 
 proc dispatchLine(imap: ImapClient; line: string) {.async.} =
   when Debugging:
     echo "S: ", line
 
 proc sendCmd(imap: ImapClient, cmd: string, args = "") {.async.} =
-  let
-    tag = imap.nextTag
-  await imap.sendLine(tag & " " & cmd & " " & args)
+  let tag = imap.nextTag
+  await imap.sendLine(fmt"{tag} {cmd} {args}")
   let
     completion = tag & " OK"
     no = tag & " NO"
   while true:
-    let
-      line = await imap.sock.recvLine()
+    let line = await imap.sock.recvLine()
     when Debugging:
       echo "S: ", line
     if line.startsWith(completion) or line.startsWith(no):
@@ -123,17 +119,14 @@ proc sendCmd(imap: ImapClient, cmd: string, args = "") {.async.} =
     else:
       await imap.dispatchLine(line)
 
-proc sendCmd(imap: ImapClient; cmd, args: string,
-             op: proc(line: string): bool) {.async.} =
-  let
-    tag = imap.nextTag
-  await imap.sendLine(tag & " " & cmd & " " & args)
+proc sendCmd(imap: ImapClient; cmd, args: string, op: LineCallback) {.async.} =
+  let tag = imap.nextTag
+  await imap.sendLine(fmt"{tag} {cmd} {args}")
   let
     completion = tag & " OK"
     no = tag & " NO"
   while true:
-    let
-      line = await imap.sock.recvLine()
+    let line = await imap.sock.recvLine()
     when Debugging:
       echo "S: ", line
     if line.startsWith(completion) or line.startsWith(no):
@@ -142,6 +135,14 @@ proc sendCmd(imap: ImapClient; cmd, args: string,
       if not op(line):
         await imap.dispatchLine(line)
 
+proc sendAny(imap: ImapClient; cb: LineCallback; cmd: string, args = ""): Future[void] =
+  let tag = imap.nextTag
+  imap.anyCallbacks.addLast cb
+  if args == "":
+    imap.sendLine(fmt"{tag} {cmd}")
+  else:
+    imap.sendLine(fmt"{tag} {cmd} {args}")
+
 proc connect*(imap: ImapClient; host: string, port = imapPort) {.async} =
   ## Establish a connection to an IMAP server
   await imap.sock.connect(host, port)
@@ -149,7 +150,7 @@ proc connect*(imap: ImapClient; host: string, port = imapPort) {.async} =
 
 proc authenticate*(imap: ImapClient; user, pass: string) {.async.} =
   ## Authenticate to an IMAP server
-  await imap.sendCmd("LOGIN", user & " " & pass)
+  await imap.sendCmd("LOGIN", fmt"{user} {pass}")
 
 proc connect*(imap: ImapClient; host: string; port: Port; user, pass: string) {.async.} =
   ## Connect and authenticate to an IMAP server
@@ -173,10 +174,10 @@ proc noop*(imap: ImapClient) {.async.} =
   await imap.sendCmd("NOOP")
 
 proc create*(imap: ImapClient; name: string) {.async.} =
-  await imap.sendCmd("CREATE " & name)
+  await imap.sendCmd(fmt"CREATE {name}")
 
 proc store*(imap: ImapClient; uid: int, flags: string) {.async.} =
-  await imap.sendCmd("STORE " & $uid & " " & flags)
+  await imap.sendCmd(fmt"STORE {$uid} {flags}")
 
 proc examine*(imap: ImapClient; name: string): Future[void] =
   ## The EXAMINE command is identical to SELECT and returns the same
@@ -187,7 +188,7 @@ proc examine*(imap: ImapClient; name: string): Future[void] =
       imap.assertOk(line)
       recv.complete()
       true
-    send = imap.sendTag(cb, "EXAMINE " & name)
+    send = imap.sendTag(cb, fmt"EXAMINE {name}")
   all(send, recv)
 
 proc select*(imap: ImapClient; name: string): Future[void] =
@@ -199,7 +200,7 @@ proc select*(imap: ImapClient; name: string): Future[void] =
       imap.assertOk(line)
       recv.complete()
       true
-    send = imap.sendTag(cb, "SELECT " & name)
+    send = imap.sendTag(cb, fmt"SELECT {name}")
   all(send, recv)
 
 proc fetch*(imap: ImapClient; uid: int, items: string): Future[string] {.async.} =
@@ -209,31 +210,20 @@ proc fetch*(imap: ImapClient; uid: int, items: string): Future[string] {.async.}
     len: int
     id: int
     section: string
-  let
-    tag = imap.nextTag
-  await imap.sendLine(tag & "FETCH $# $#" % [$uid, items])
-  let
-    completion = tag & " OK"
-    no = tag & " NO"
-  while true:
-    let
-      line = await imap.sock.recvLine()
-    when Debugging:
-      echo "S: ", line
-    if line.startsWith(completion) or line.startsWith(no):
-      break
-    else:
-      if scanf(line, "* $i FETCH ($+ {$i}", id, section, len):
-        if id == uid:
-          result = await imap.sock.recv(len)
-      else:
-        await imap.dispatchLine(line)
+    data: string
+  let cb = proc(line: string): bool =
+    if scanf(line, "* $i FETCH ($+ {$i}", id, section, len):
+      if id == uid:
+        data.add waitFor imap.sock.recv(len)
+        result = true
+  imap.anyCallbacks.addLast cb
+  await imap.sendCmd("FETCH", fmt"{$uid} {items}")
+  return data
 
-proc append*(imap: ImapClient;
-             mailbox, flags, msg: string) {.async.} =
-  ## Append a new message to the end of the specified destination mailbox.
+proc append*(imap: ImapClient, mailbox, flags, msg: string) {.async.} =
   let tag = imap.nextTag
-  await imap.sendLine(tag & "APPEND " & mailbox & " (" & flags & ") {" & $msg.len & "}")
+  ## Append a new message to the end of the specified destination mailbox.
+  await imap.sendLine(fmt"{tag} APPEND {mailbox} {flags} {$msg.len}")
   while true:
     let line = await imap.sock.recvLine()
     when Debugging:
@@ -251,28 +241,17 @@ proc append*(imap: ImapClient;
 proc search*(imap: ImapClient; spec: string): Future[seq[int]] {.async.} =
   ## The SEARCH command searches the mailbox for messages that match
   ## the given searching criteria.
-  result = newSeq[int]()
-  let
-    uids = addr result
-  let
-    op = proc(line: string): bool =
-      if line.startsWith("* SEARCH "):
-        let
-          elems = line.split(' ')
-        uids[].setLen(elems.len-2)
-        for i in 2..high(elems):
-          uids[][i-2] = parseint elems[i]
-        result = true
-
-  await imap.sendCmd("SEARCH", spec, op)
-
-proc sendAny(imap: ImapClient; cb: LineCallback; cmd: string, args = ""): Future[void] =
-  imap.anyCallbacks.addLast cb
-  let tag = imap.nextTag
-  if args == "":
-    imap.sendLine(tag & " " & cmd)
-  else:
-    imap.sendLine(tag & " " & cmd & " " & args)
+  var uids = newSeq[int]()
+  let op = proc(line: string): bool =
+    if line.startsWith("* SEARCH "):
+      let elems = line.split(' ')
+      uids.setLen(elems.len-2)
+      for i in 2..high(elems):
+        uids[i-2] = parseint elems[i]
+      result = true
+  imap.anyCallbacks.addLast op
+  await imap.sendCmd("SEARCH", spec)
+  return uids
 
 proc process*(imap: ImapClient): Future[void] {.async.} =
   ## Process messages from the IMAP server
@@ -281,7 +260,7 @@ proc process*(imap: ImapClient): Future[void] {.async.} =
     let line = await imap.sock.recvLine()
     when Debugging:
       echo "S: ", line
-    if line.startswith("*"):
+    if line[0] == '*':
       for _ in 1..imap.anyCallbacks.len:
         let cb = imap.anyCallbacks.popFirst()
         if not cb(line):
