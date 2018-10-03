@@ -213,9 +213,25 @@ proc fetch*(imap: ImapClient; uid: int, items: string): Future[string] {.async.}
     data: string
   let cb = proc(line: string): bool =
     if scanf(line, "* $i FETCH ($+ {$i}", id, section, len):
-      if id == uid:
-        data.add waitFor imap.sock.recv(len)
-        result = true
+      if id != uid:
+        return
+    var line = waitFor imap.sock.recv(len)
+    when Debugging:
+      echo "S: ", line
+    data.add line
+    while true:
+      var line = waitFor imap.sock.recvLine()
+      when Debugging:
+        echo "S: ", line
+      if line == ")":
+        break
+      elif scanf(line, " $+ {$i}", section, len):
+        var line = waitFor imap.sock.recv(len)
+        when Debugging:
+          echo "S: ", line
+        data.add line
+
+    result = true
   imap.anyCallbacks.addLast cb
   await imap.sendCmd("FETCH", fmt"{$uid} {items}")
   return data
