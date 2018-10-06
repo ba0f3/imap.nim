@@ -104,7 +104,7 @@ proc dispatchLine(imap: ImapClient; line: string) {.async.} =
   when Debugging:
     echo "S: ", line
 
-proc sendCmd(imap: ImapClient, cmd: string, args = "") {.async.} =
+proc sendCmd*(imap: ImapClient, cmd: string, args = "") {.async.} =
   let tag = imap.nextTag
   await imap.sendLine(fmt"{tag} {cmd} {args}")
   let
@@ -113,6 +113,8 @@ proc sendCmd(imap: ImapClient, cmd: string, args = "") {.async.} =
     bad = tag & " BAD"
   while true:
     let line = await imap.sock.recvLine()
+    if line.len == 0:
+      break
     when Debugging:
       echo "S: ", line
     if line.startsWith(completion) or line.startsWith(no):
@@ -132,9 +134,10 @@ proc sendCmd(imap: ImapClient; cmd, args: string, op: LineCallback) {.async.} =
     bad = tag & " BAD"
   while true:
     let line = await imap.sock.recvLine()
+    if line.len == 0:
+      break
     when Debugging:
       echo "S: ", line
-    echo "line: ", line
     if line.startsWith(completion) or line.startsWith(no):
       break
     if line.startsWith(bad):
@@ -216,33 +219,37 @@ proc fetch*(imap: ImapClient; uid: int, items: string): Future[string] {.async.}
   ## The FETCH command retrieves data associated with a message in the
   ## mailbox.
   var
-    len: int
+    length: int
     id: int
     section: string
     data: string
+    flags: string
   let cb = proc(line: string): bool =
-    if scanf(line, "* $i FETCH ($+ {$i}", id, section, len):
+    if scanf(line, "* $i FETCH ($+ {$i}", id, section, length):
       if id != uid:
         return
-    var line = waitFor imap.sock.recv(len)
+    var line = waitFor imap.sock.recv(length)
     when Debugging:
       echo "S: ", line
     data.add line
     while true:
       var line = waitFor imap.sock.recvLine()
+      if line.len == 0:
+        break
       when Debugging:
         echo "S: ", line
       if line == ")":
         break
-      elif scanf(line, " $+ {$i}", section, len):
-        var line = waitFor imap.sock.recv(len)
+      elif scanf(line, " FLAGS ($+))$.", flags):
+        break
+      elif scanf(line, " $+ {$i}", section, length) and length >= 1:
+        var line = waitFor imap.sock.recv(length)
         when Debugging:
           echo "S: ", line
         data.add line
 
-    result = true
-  imap.anyCallbacks.addLast cb
-  await imap.sendCmd("FETCH", fmt"{$uid} {items}")
+    true
+  await imap.sendCmd("FETCH", fmt"{$uid} {items}", cb)
   return data
 
 proc append*(imap: ImapClient, mailbox, flags, msg: string) {.async.} =
@@ -283,6 +290,9 @@ proc process*(imap: ImapClient): Future[void] {.async.} =
   ## until the connection is closed.
   while not imap.sock.isClosed:
     let line = await imap.sock.recvLine()
+    if line.len == 0:
+      break
+
     when Debugging:
       echo "S: ", line
     if line[0] == '*':
